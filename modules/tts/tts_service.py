@@ -11,6 +11,7 @@ from typing import Optional
 # 检查各种本地TTS是否可用
 ESPEAK_AVAILABLE = False
 FESTIVAL_AVAILABLE = False
+PYGAME_INITIALIZED = False  # 添加pygame初始化状态跟踪
 
 try:
     subprocess.run(["espeak", "--version"], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -43,6 +44,8 @@ class TTSService:
         self.model_path = model_path or "/mnt/data/modelscope_cache/hub/pengzhendong"
         self.is_speaking = False
         self.speak_thread = None
+        self.current_playback_thread = None  # 添加当前播放线程跟踪
+        self.should_stop_playback = False    # 添加播放中断标志
         os.makedirs(output_dir, exist_ok=True)
 
         # 初始化 IndexTTS 模型
@@ -226,16 +229,22 @@ class TTSService:
             print(f"[TTSService] 无效文本，跳过播放: {text}")
             return
 
-        # 移除播放状态检查，确保可以播放多个语音
-        self.speak_thread = threading.Thread(target=self._speak_and_play_thread, args=(text, filename))
-        self.speak_thread.daemon = True
-        self.speak_thread.start()
+        # 中断当前播放
+        self.should_stop_playback = True
+        if self.current_playback_thread and self.current_playback_thread.is_alive():
+            self.current_playback_thread.join(timeout=1.0)  # 等待最多1秒
+        
+        # 启动新的播放线程
+        self.current_playback_thread = threading.Thread(target=self._speak_and_play_thread, args=(text, filename))
+        self.current_playback_thread.daemon = True
+        self.current_playback_thread.start()
 
     def _speak_and_play_thread(self, text: str, filename: str):
         # 不检查播放状态，允许连续播放
+        self.should_stop_playback = False
         try:
             audio_path = self.speak(text, filename)
-            if not audio_path:
+            if not audio_path or self.should_stop_playback:
                 return
             self._play_audio(audio_path)
         except Exception as e:
@@ -245,6 +254,12 @@ class TTSService:
         """
         播放音频文件（兼容Linux/macOS/Windows）
         """
+        global PYGAME_INITIALIZED
+        
+        # 检查是否需要中断播放
+        if self.should_stop_playback:
+            return
+            
         try:
             # 检查文件是否存在且不为空
             if not os.path.exists(audio_path):
@@ -258,24 +273,43 @@ class TTSService:
             # 尝试使用pygame播放
             try:
                 import pygame
-                pygame.mixer.init()
+                # 修复：使用全局状态跟踪pygame初始化，避免重复初始化
+                if not PYGAME_INITIALIZED:
+                    pygame.mixer.init()
+                    PYGAME_INITIALIZED = True
+                
                 pygame.mixer.music.load(audio_path)
                 pygame.mixer.music.play()
 
-                while pygame.mixer.music.get_busy():
+                while pygame.mixer.music.get_busy() and not self.should_stop_playback:
                     time.sleep(0.1)
-                pygame.mixer.quit()
+                    
+                # 修复：使用fadeout避免可能的内存问题
+                if not self.should_stop_playback:
+                    pygame.mixer.music.fadeout(100)
+                    time.sleep(0.2)  # 等待fadeout完成
+                else:
+                    pygame.mixer.music.stop()
                 print(f"[TTS] ✅ 使用pygame成功播放音频: {audio_path}")
                 return
             except ImportError:
                 print("[TTS] ⚠️ pygame未安装，尝试其他播放方式")
             except Exception as e:
                 print(f"[TTS] ⚠️ pygame播放失败: {e}")
+                # 确保在出错时也清理资源
+                try:
+                    if 'pygame' in locals():
+                        pygame.mixer.quit()
+                        PYGAME_INITIALIZED = False
+                except:
+                    pass
             
             # 尝试使用playsound
             try:
                 import playsound
-                playsound.playsound(audio_path)
+                # 检查是否需要中断播放
+                if not self.should_stop_playback:
+                    playsound.playsound(audio_path)
                 print(f"[TTS] ✅ 使用playsound成功播放音频: {audio_path}")
                 return
             except ImportError:
@@ -285,10 +319,14 @@ class TTSService:
             
             # 尝试系统播放器
             if sys.platform == "win32":
-                os.startfile(audio_path)
+                # 检查是否需要中断播放
+                if not self.should_stop_playback:
+                    os.startfile(audio_path)
                 print(f"[TTS] ✅ 使用系统默认播放器成功播放音频: {audio_path}")
             elif sys.platform == "darwin":
-                subprocess.call(["afplay", audio_path])
+                # 检查是否需要中断播放
+                if not self.should_stop_playback:
+                    subprocess.call(["afplay", audio_path])
                 print(f"[TTS] ✅ 使用afplay成功播放音频: {audio_path}")
             else:  # Linux系统
                 # 尝试使用多种播放器
@@ -299,18 +337,20 @@ class TTSService:
                         # 检查播放器是否存在
                         subprocess.run(["which", player], check=True, stdout=subprocess.DEVNULL)
                         print(f"[TTS] 使用播放器: {player}")
-                        if player == "paplay":
-                            subprocess.run([player, "--file-format=wav", audio_path])
-                        elif player == "aplay":
-                            subprocess.run([player, "-f", "cd", audio_path])
-                        elif player == "ffplay":
-                            subprocess.run([player, "-nodisp", "-autoexit", audio_path], 
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        elif player == "vlc":
-                            subprocess.run([player, "--play-and-exit", audio_path], 
-                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        else:
-                            subprocess.run([player, audio_path])
+                        # 检查是否需要中断播放
+                        if not self.should_stop_playback:
+                            if player == "paplay":
+                                subprocess.run([player, "--file-format=wav", audio_path])
+                            elif player == "aplay":
+                                subprocess.run([player, "-f", "cd", audio_path])
+                            elif player == "ffplay":
+                                subprocess.run([player, "-nodisp", "-autoexit", audio_path], 
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            elif player == "vlc":
+                                subprocess.run([player, "--play-and-exit", audio_path], 
+                                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            else:
+                                subprocess.run([player, audio_path])
                         player_found = True
                         print(f"[TTS] ✅ 使用{player}成功播放音频: {audio_path}")
                         break  # 成功播放就跳出循环
@@ -346,3 +386,17 @@ class TTSService:
         filename = f"product_{int(time.time())}.wav"
         
         self.speak_and_play(info_text, filename)
+
+    def cleanup(self):
+        """
+        清理资源，特别是pygame资源
+        """
+        global PYGAME_INITIALIZED
+        try:
+            import pygame
+            if PYGAME_INITIALIZED:
+                pygame.mixer.quit()
+                PYGAME_INITIALIZED = False
+                print("[TTS] ✅ Pygame资源已清理")
+        except:
+            pass

@@ -123,6 +123,9 @@ def show_product_popup(product_info: dict):
         logger.warning("[Popup] ⚠️ 商品信息不完整")
         return
     
+    # 先关闭当前弹窗和停止当前TTS播放
+    close_current_popup()
+    
     # 使用队列方式确保在主线程创建弹窗
     gui_queue.put(("show_popup", product_info))
     
@@ -189,9 +192,11 @@ def process_gui_queue():
                     except:
                         pass
                 window_manager.active_windows.clear()
-                        
+                
     except python_queue.Empty:
-        pass  # 队列为空，继续执行
+        pass
+    except Exception as e:
+        logger.error(f"❌ 处理GUI队列时出错: {e}")
 
 # -----------------------------
 # 模糊匹配逻辑
@@ -337,7 +342,9 @@ def find_product_by_query(query_text: str):
     matched_product = fuzzy_match_product(query_text)
     if matched_product:
         logger.info(f"[Retrieval] ✅ 匹配到商品: {matched_product['name']}")
-        close_current_popup()  # 关闭之前的弹窗
+        # 先关闭之前的弹窗和TTS播放
+        close_current_popup()
+        # 显示新商品弹窗
         show_product_popup(matched_product)
         conversation_state["current_product"] = matched_product
         conversation_state["waiting_for_size"] = True
@@ -533,6 +540,12 @@ if __name__ == "__main__":
             time.sleep(0.01)  # 短暂休眠以避免占用过多CPU
     except KeyboardInterrupt:
         logger.info("🛑 程序退出")
+        # 清理TTS资源
+        try:
+            if tts_service:
+                tts_service.cleanup()
+        except Exception as e:
+            logger.error(f"⚠️ TTS资源清理失败: {e}")
         sys.exit(0)
 
 # -----------------------------
