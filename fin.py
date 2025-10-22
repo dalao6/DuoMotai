@@ -233,15 +233,34 @@ def fuzzy_match_product(query: str):
             matched["name"] = pid
             return matched
     
-    # 最后尝试更宽松的匹配
+    # 尝试更广泛的匹配，支持安踏等其他品牌
     for pid, info in product_manager.products.items():
-        # 检查产品名中的每个词是否在查询中
-        name_words = pid.replace("耐克", "").replace("短袖", "").strip()
+        # 检查产品名中的关键词是否在查询中
+        # 移除品牌和类型关键词，只匹配颜色和款式
+        name_words = pid.replace("耐克", "").replace("安踏", "").replace("短袖", "").replace("长袖", "").replace("长裤", "").strip()
         if name_words and name_words.lower() in query:
             matched = info.copy()
             matched["name"] = pid
             return matched
             
+    # 尝试按品牌和类型进行匹配
+    brands = ["耐克", "安踏"]
+    types = ["短袖", "长袖", "长裤"]
+    
+    for brand in brands:
+        for type_ in types:
+            if brand in query and type_ in query:
+                # 尝试匹配颜色
+                colors = ["白色", "黑色", "红色", "黄色", "绿色", "灰色", "蓝色"]
+                for color in colors:
+                    if color in query:
+                        # 构造可能的产品名称
+                        possible_name = f"{brand}{color}{type_}"
+                        if possible_name in product_manager.products:
+                            matched = product_manager.products[possible_name].copy()
+                            matched["name"] = possible_name
+                            return matched
+    
     return None
 
 # -----------------------------
@@ -272,12 +291,12 @@ def find_product_by_query(query_text: str):
         return None
     
     # 过滤掉包含特定无意义字符组合的输入
-    if re.search(r'[A-Za-z]{5,}', query_text) and not any(chinese_char in query_text for chinese_char in '耐克短袖衣服T恤'):
+    if re.search(r'[A-Za-z]{5,}', query_text) and not any(chinese_char in query_text for chinese_char in '耐克安踏短袖长袖长裤T恤'):
         logger.debug("忽略包含过多英文字符的输入")
         return None
     
     # 检查是否是取消购买的表达
-    cancel_phrases = ["不想买了", "不想要了", "取消", "不要了", "不买了", "算了"]
+    cancel_phrases = ["不想买了", "不想要了", "取消", "不要了", "不买了", "算了", "我不要了"]
     if any(cancel_phrase in query_text for cancel_phrase in cancel_phrases):
         close_current_popup()
         cancel_text = "好的，已为您取消"
@@ -336,7 +355,8 @@ def find_product_by_query(query_text: str):
             return product
         else:
             logger.debug("未识别到有效的尺码信息")
-            return None
+            # 继续处理可能的新商品查询
+            pass
 
     # 匹配商品 - 只有当查询包含商品关键词时才进行匹配
     matched_product = fuzzy_match_product(query_text)
@@ -361,7 +381,7 @@ def find_product_by_query(query_text: str):
         return matched_product
 
     # 如果有明确的商品相关词汇才进行图像检索
-    product_keywords = ["耐克", "Nike", "短袖", "衣服", "shirt", "t恤", "T恤"]
+    product_keywords = ["耐克", "Nike", "安踏", "短袖", "长袖", "长裤", "衣服", "shirt", "t恤", "T恤"]
     # 增强过滤条件，只有当查询包含商品关键词且长度足够时才进行图像检索
     if any(keyword in query_text for keyword in product_keywords) and len(query_text.strip()) >= 4:
         # 修复变量名错误：image_retrieval 应该是 image_retriever

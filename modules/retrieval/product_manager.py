@@ -57,6 +57,24 @@ class ProductManager:
                 results.append(info)
         return results
 
+    def search_product(self, product_name: str) -> Dict[str, Any]:
+        """根据商品名称搜索商品"""
+        # 尝试直接匹配
+        if product_name in self.products:
+            return self.products[product_name]
+        
+        # 尝试模糊匹配
+        for pid, info in self.products.items():
+            if product_name in pid or pid in product_name:
+                return info
+                
+        # 使用关键词搜索
+        results = self.search_by_keyword(product_name)
+        if results:
+            return results[0]  # 返回第一个匹配结果
+            
+        return None
+
     def get_product(self, product_id: str) -> Dict[str, Any]:
         """通过商品ID获取商品信息"""
         return self.products.get(product_id, None)
